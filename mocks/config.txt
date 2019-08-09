@@ -1,1 +1,15 @@
 # An empty config file, all results will be 404
+
+GET /hello
+headers;hello.html
+
+/reset
+`reset;headers;reset.html
+
+/time
+`5000;headers;time2.html
+
+/time
+`1000;headers;time1.html
+
+
