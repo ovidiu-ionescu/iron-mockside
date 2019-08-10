@@ -6,7 +6,7 @@ use std::io;
 use std::io::prelude::*;
 use std::net::{TcpListener, TcpStream};
 
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 #[macro_use]
@@ -16,6 +16,7 @@ struct Mock<'a> {
     name: &'a str,
     filenames: &'a str,
     patterns: Vec<&'a str>,
+    time: Option<Duration>,
 }
 
 fn main() {
@@ -38,6 +39,7 @@ fn main() {
         name: "default",
         filenames: "404.html",
         patterns: Vec::new(),
+        time: None,
     };
     let mut time = Instant::now();
 
@@ -57,11 +59,25 @@ fn process_config_file(config_file: &str) -> Vec<Mock> {
         .filter(|(key, _group)| !key)
     {
         let mut patterns: Vec<&str> = group.map(|s| s.trim()).collect();
+
         if let Some(filenames) = patterns.pop() {
+            let time: Option<Duration> = if filenames.starts_with('`') {
+                lazy_static! {
+                    static ref TIME: Regex = Regex::new(r"^`\s*(\d+)\s*;").unwrap();
+                }
+                match TIME.captures_iter(filenames).next() {
+                    Some(group) => Some(Duration::from_millis(group[1].parse().unwrap())),
+                    None => None,
+                }
+            } else {
+                None
+            };
+
             config.push(Mock {
                 name: "",
                 filenames,
                 patterns,
+                time,
             });
         }
     }
@@ -109,7 +125,7 @@ fn handle_connection(
     }
 
     let mut filename_iterator = mock.filenames.split(";").map(|s| s.trim());
-    if mock.filenames.starts_with('`')  {
+    if mock.filenames.starts_with('`') {
         filename_iterator.next();
     }
     for file in filename_iterator {
@@ -119,6 +135,7 @@ fn handle_connection(
     stream.flush().unwrap();
 }
 
+/// Finds a mock in the configuration corresponding to this request
 fn find_mock<'a, 'b>(
     request: &'a str,
     config: &'b Vec<Mock>,
@@ -130,36 +147,13 @@ fn find_mock<'a, 'b>(
                 continue 'outside;
             }
         }
-        if mock.filenames.starts_with('`') {
-            lazy_static! {
-                static ref TIME: Regex = Regex::new(r"^`\s*(\d+)\s*;").unwrap();
-            }
-            if let Some(group) = TIME.captures_iter(mock.filenames).next() {
-                let d = Duration::from_millis(group[1].parse().unwrap());
-                if Instant::now().duration_since(*time_origin) < d {
-                    continue 'outside;
-                }
+        if let Some(duration) = mock.time {
+            if Instant::now().duration_since(*time_origin) < duration {
+                continue 'outside;
             }
         }
 
         return Some(mock);
     }
     None
-}
-
-#[cfg(test)]
-mod tests2 {
-    use regex::Regex;
-    #[test]
-    fn regex_check() {
-        let s = r"`5000;aha";
-        lazy_static! {
-            static ref time_regex: Regex = Regex::new(r"^`\s*(\d+)\s*;").unwrap();
-        }
-        let mut groups = time_regex.captures_iter(s);
-        if let Some(group) = groups.next() {
-            let val:u32 = group[1].parse().unwrap();
-            println!("time: {}, parsed: {}", &group[1], val);
-        }
-    }
 }
