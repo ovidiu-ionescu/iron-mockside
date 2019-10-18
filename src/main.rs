@@ -12,6 +12,8 @@ use regex::Regex;
 #[macro_use]
 extern crate lazy_static;
 
+
+
 struct Mock<'a> {
     name: &'a str,
     filenames: &'a str,
@@ -43,9 +45,12 @@ fn main() {
     };
     let mut time = Instant::now();
 
+    let mut counter: usize = 0;
+
     for stream in listener.incoming() {
         let stream = stream.unwrap();
-        handle_connection(stream, &config, &default_mock, &mut time);
+        counter += 1;
+        handle_connection(stream, &config, &default_mock, &mut time, counter);
     }
 }
 
@@ -107,19 +112,34 @@ fn handle_connection(
     config: &Vec<Mock>,
     default_mock: &Mock,
     time_origin: &mut Instant,
+    counter: usize
 ) {
     let mut buffer = [0; 20480];
     stream.read(&mut buffer).unwrap();
     let request = String::from_utf8_lossy(&buffer[..]);
-    println!("=========================\nRequest:\n{}\n\n", request);
 
     // let mock = find_mock(&request, &config).unwrap_or_else(|| default_mock);
+    let mut mock_found = false;
     let mock = match find_mock(&request, &config, time_origin) {
-        Some(mock) => mock,
+        Some(mock) => { mock_found = true; mock},
         None => default_mock,
     };
+    
+    if mock_found {
+        if counter %2 == 0 {
+            print!("\x1b[32;1m");
+        } else {
+            print!("\x1b[32m");
+        }
+    } else {
+        // "\x1B[31;1;4m" red, bold, underligned
+        print!("\x1B[31;1m");
+    }
+    println!("=========================\nRequest {}:\n{}\n\n", counter, request);
 
     println!("Response: {}", mock.filenames);
+    // Reset the colors
+    print!("\x1B[0m");
     if mock.filenames.starts_with("`reset") {
         *time_origin = Instant::now();
     }
