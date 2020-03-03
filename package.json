@@ -1,0 +1,29 @@
+{
+  "name": "iron-mockside",
+  "version": "1.0.0",
+  "description": "Web Mock Server",
+  "main": "iron-mockside",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ovidiu-ionescu/iron-mockside.git"
+  },
+  "keywords": [
+    "test",
+    "mock",
+    "web",
+    "server"
+  ],
+  "author": "Ovidiu Ionescu",
+  "license": "AGPL-3.0",
+  "bugs": {
+    "url": "https://github.com/ovidiu-ionescu/iron-mockside/issues"
+  },
+  "bin": "target/release/iron-mockside",
+  "os": [ "linux" ],
+  "cpu": [ "x64" ],
+  "files": [ "target/release/iron-mockside" ],   
+  "homepage": "https://github.com/ovidiu-ionescu/iron-mockside#readme"
+}
