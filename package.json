@@ -1,10 +1,11 @@
 {
   "name": "iron-mockside",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Web Mock Server",
   "main": "iron-mockside",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "cargo build --release --target x86_64-unknown-linux-musl" 
   },
   "repository": {
     "type": "git",
@@ -21,7 +22,7 @@
   "bugs": {
     "url": "https://github.com/ovidiu-ionescu/iron-mockside/issues"
   },
-  "bin": "target/release/iron-mockside",
+  "bin": "target/x86_64-unknown-linux-musl/release/iron-mockside",
   "os": [ "linux" ],
   "cpu": [ "x64" ],
   "files": [ "target/release/iron-mockside" ],   
