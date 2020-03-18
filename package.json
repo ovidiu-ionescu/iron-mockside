@@ -1,6 +1,6 @@
 {
   "name": "iron-mockside",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Web Mock Server",
   "main": "iron-mockside",
   "scripts": {

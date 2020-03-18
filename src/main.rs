@@ -8,6 +8,7 @@ use std::net::{TcpListener, TcpStream};
 
 use std::time::{Duration, Instant};
 use std::thread;
+use std::path::Path;
 
 use regex::Regex;
 #[macro_use]
@@ -15,6 +16,7 @@ extern crate lazy_static;
 
 use kmp::{ kmp_find_with_lsp_table, kmp_table };
 
+#[derive(Debug)]
 struct Mock<'a> {
     filenames: &'a str,
     patterns: Vec<&'a str>,
@@ -54,12 +56,16 @@ fn main() {
         );
         std::process::exit(1);
     }
-    let listener = TcpListener::bind(&args[1]).unwrap();
 
     let config_file_name = &args[2];
+    println!("Processing configuration file: {}", config_file_name);
+    
     let config_file = read_to_string(config_file_name).unwrap();
     env::set_current_dir(std::path::Path::new(config_file_name).parent().unwrap()).unwrap();
     let config = process_config_file(&config_file).unwrap();
+    if !verify_response_files_exist(&config) {
+        panic!("Invalid config file");
+    }
 
     let default_mock = Mock {
         filenames: "404.html",
@@ -72,6 +78,9 @@ fn main() {
     let mut counter: usize = 0;
 
     let kmp_tables = KmpTables::new();
+
+    println!("Starting server: {}", &args[1]);
+    let listener = TcpListener::bind(&args[1]).unwrap();
 
     for stream in listener.incoming() {
         let stream = stream.unwrap();
@@ -92,13 +101,18 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
         let mut patterns: Vec<&str> = group.map(|s| s.trim()).collect();
 
         if let Some(filenames) = patterns.pop() {
+            
             let time: Option<Duration> = if filenames.starts_with("`after") {
                 lazy_static! {
                     static ref TIME: Regex = Regex::new(r"^`after\s*(\d+)\s*;").unwrap();
                 }
                 match TIME.captures_iter(filenames).next() {
                     Some(group) => Some(Duration::from_millis(group[1].parse().unwrap())),
-                    None => return Err("After line has no number of millis specified"),
+                    None => {
+                        let err = "After line has no number of millis specified";
+                        eprintln!("{}: {}", err, filenames);
+                        return Err(err);
+                    }
                 }
             } else {
                 None
@@ -110,11 +124,24 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                 }
                 match DELAY.captures_iter(filenames).next() {
                     Some(group) => Some(Duration::from_millis(group[1].parse().unwrap())),
-                    None => return Err("delay line has no number or millis specified"),
+                    None => {
+                        let err = "delay line has no number or millis specified";
+                        eprintln!("{}: {}", err, filenames);
+                        return Err(err);
+                    }
                 }
             } else {
                 None
             };
+
+            // if the last line stars with ` make sure it was parsed it correctly
+            if filenames.starts_with('`') && !filenames.starts_with("`reset") && time.is_none() && delay.is_none() {
+                let err = "Could not parse time instructions";
+                eprintln!("{}:", err);
+                patterns.push(filenames);
+                eprintln!("{:#?}", patterns);
+                return Err(err);
+            }
 
             config.push(Mock {
                 filenames,
@@ -125,6 +152,25 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
         }
     }
     Ok(config)
+}
+
+fn verify_response_files_exist(config: &Vec<Mock>) -> bool {
+    let mut result = true;
+    for mock in config {
+        let mut filename_iterator = mock.filenames.split(";").map(|s| s.trim()).filter(|s| s.len() > 0);
+
+        if mock.filenames.starts_with('`') {
+            filename_iterator.next();
+        }
+        for file in filename_iterator {
+            if !Path::new(file).exists() {
+                result = false;
+                eprintln!("Could not find file: {}", file);
+                println!("{:#?}", mock);
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -165,6 +211,17 @@ mod tests {
         let config_file = r##"
         POST /path
         `delay; headers
+        "##;
+
+        let config = super::process_config_file(config_file);
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn process_bad_config_file2() {
+        let config_file = r##"
+        POST /path
+        `1000; headers
         "##;
 
         let config = super::process_config_file(config_file);
@@ -273,7 +330,7 @@ fn handle_connection(
         thread::sleep(delay);
     }
 
-    let mut filename_iterator = mock.filenames.split(";").map(|s| s.trim());
+    let mut filename_iterator = mock.filenames.split(";").map(|s| s.trim()).filter(|s| s.len() > 0);
     if mock.filenames.starts_with('`') {
         filename_iterator.next();
     }
