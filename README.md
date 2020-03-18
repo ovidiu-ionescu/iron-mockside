@@ -52,10 +52,11 @@ headers. First group from the config file to fully match will be the reply.
 The default response is the 404.html file.
 
 In the file line, if the first entry starts with \` (back tick) it means time.  
-\`reset will set the internal timer to now
-\`1000 means only execute this after 1000 milliseconds have passed 
-since the timer was reset.  
+- ``` `reset``` will set the internal timer to now
+- ``` `after 1000``` means only execute this after 1000 milliseconds have passed since reset.
 Because first in the list is first served, put longer times first.
+- ``` `delay 1000``` means the reply will delay with 1000 milliseconds
+since the timer was reset.  
 
 Example config file:
 
@@ -68,12 +69,12 @@ headers;hello.html
 `reset;headers;reset.html
 
 # only match 5000 milliseconds after reset
-/time
-`5000;headers;time2.html
+/after time
+`after 5000;headers;time2.html
 
 # only match 1000 milliseconds after reset
 /time
-`1000;headers;time1.html
+`delay 1000;headers;time1.html
 
 ```
 

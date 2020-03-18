@@ -25,10 +25,10 @@ headers;hello.html
 
 # only match 5000 milliseconds after reset
 /time
-`5000;headers;time2.html
+`after 5000;headers;time2.html
 
 # only match 1000 milliseconds after reset
 /time
-`1000;headers;time1.html
+`after 1000;headers;time1.html
 
 

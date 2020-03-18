@@ -7,6 +7,7 @@ use std::io::prelude::*;
 use std::net::{TcpListener, TcpStream};
 
 use std::time::{Duration, Instant};
+use std::thread;
 
 use regex::Regex;
 #[macro_use]
@@ -18,6 +19,7 @@ struct Mock<'a> {
     filenames: &'a str,
     patterns: Vec<&'a str>,
     time: Option<Duration>,
+    delay: Option<Duration>,
 }
 
 // to accelerate the search of headers
@@ -57,12 +59,13 @@ fn main() {
     let config_file_name = &args[2];
     let config_file = read_to_string(config_file_name).unwrap();
     env::set_current_dir(std::path::Path::new(config_file_name).parent().unwrap()).unwrap();
-    let config = process_config_file(&config_file);
+    let config = process_config_file(&config_file).unwrap();
 
     let default_mock = Mock {
         filenames: "404.html",
         patterns: Vec::new(),
         time: None,
+        delay: None,
     };
     let mut time = Instant::now();
 
@@ -77,7 +80,7 @@ fn main() {
     }
 }
 
-fn process_config_file(config_file: &str) -> Vec<Mock> {
+fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
     let mut config = Vec::with_capacity(100);
     for (_key, group) in config_file
         .lines()
@@ -89,13 +92,25 @@ fn process_config_file(config_file: &str) -> Vec<Mock> {
         let mut patterns: Vec<&str> = group.map(|s| s.trim()).collect();
 
         if let Some(filenames) = patterns.pop() {
-            let time: Option<Duration> = if filenames.starts_with('`') {
+            let time: Option<Duration> = if filenames.starts_with("`after") {
                 lazy_static! {
-                    static ref TIME: Regex = Regex::new(r"^`\s*(\d+)\s*;").unwrap();
+                    static ref TIME: Regex = Regex::new(r"^`after\s*(\d+)\s*;").unwrap();
                 }
                 match TIME.captures_iter(filenames).next() {
                     Some(group) => Some(Duration::from_millis(group[1].parse().unwrap())),
-                    None => None,
+                    None => return Err("After line has no number of millis specified"),
+                }
+            } else {
+                None
+            };
+
+            let delay: Option<Duration> = if filenames.starts_with("`delay") {
+                lazy_static! {
+                    static ref DELAY: Regex = Regex::new(r"^`delay\s*(\d+)\s*;").unwrap();
+                }
+                match DELAY.captures_iter(filenames).next() {
+                    Some(group) => Some(Duration::from_millis(group[1].parse().unwrap())),
+                    None => return Err("delay line has no number or millis specified"),
                 }
             } else {
                 None
@@ -105,10 +120,11 @@ fn process_config_file(config_file: &str) -> Vec<Mock> {
                 filenames,
                 patterns,
                 time,
+                delay,
             });
         }
     }
-    config
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -124,8 +140,35 @@ mod tests {
             headers
             "##;
 
-        let config = super::process_config_file(config_file);
+        let config = super::process_config_file(config_file).unwrap();
         assert_eq!(2, config.len());
+    }
+
+    #[test]
+    fn process_config_file_with_time() {
+        let config_file = r##"
+        POST /path1
+        `after 1000;headers;body
+
+        POST /path2
+        `delay 2000;headers;body
+        "##;
+
+        let config = super::process_config_file(config_file).unwrap();
+        assert_eq!(2, config.len());
+        assert_eq!(Some(super::Duration::from_millis(1000)), config.first().unwrap().time);
+        assert_eq!(Some(super::Duration::from_millis(2000)), config.last().unwrap().delay);
+    }
+
+    #[test]
+    fn process_bad_config_file() {
+        let config_file = r##"
+        POST /path
+        `delay; headers
+        "##;
+
+        let config = super::process_config_file(config_file);
+        assert!(config.is_err());
     }
 }
 
@@ -224,6 +267,10 @@ fn handle_connection(
     print!("\x1B[0m");
     if mock.filenames.starts_with("`reset") {
         *time_origin = Instant::now();
+    }
+
+    if let Some(delay) = mock.delay {
+        thread::sleep(delay);
     }
 
     let mut filename_iterator = mock.filenames.split(";").map(|s| s.trim());
