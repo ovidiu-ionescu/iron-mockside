@@ -25,6 +25,6 @@
   "bin": "target/x86_64-unknown-linux-musl/release/iron-mockside",
   "os": [ "linux" ],
   "cpu": [ "x64" ],
-  "files": [ "target/release/iron-mockside" ],   
+  "files": [ "target/x86_64-unknown-linux-musl/release/iron-mockside" ],   
   "homepage": "https://github.com/ovidiu-ionescu/iron-mockside#readme"
 }
