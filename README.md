@@ -58,6 +58,9 @@ Because first in the list is first served, put longer times first.
 - ``` `delay 1000``` means the reply will delay with 1000 milliseconds
 since the timer was reset.  
 
+Optionally, a profile label could be added which would make the response 
+specific to the current profile.
+
 Example config file:
 
 ```
