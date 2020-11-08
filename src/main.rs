@@ -21,7 +21,8 @@ extern crate lazy_static;
 
 use kmp::{ kmp_find_with_lsp_table, kmp_table };
 
-use clap::clap_app;
+use clap::{clap_app, crate_version};
+use log::*;
 
 const DEFAULT_PROFILE: isize = 0;
 const ANY_PROFILE: isize = -1;
@@ -66,7 +67,7 @@ impl KmpTables {
 fn main() {
     let command_line_params = clap_app!(
         ("iron-mockside") => 
-        (version: "2.0")
+        (version: crate_version!())
         (author: "Ovidiu Ionescu <ovidiu@ionescu.net>")
         (about: "A mock server useful for testing")
         (@arg debug: -d +multiple "Set debug level debug information")
@@ -74,31 +75,35 @@ fn main() {
         (@arg ("config file"): +required "Configuration file, e.g. mocks/config.txt")
     ).get_matches();
 
-    let debug_level = command_line_params.occurrences_of("debug");
-    if debug_level > 3 {
-        println!("{:#?}", command_line_params);
-    }
+    let log_level = command_line_params.occurrences_of("debug") as usize;
+    stderrlog::new()
+        .module(module_path!())
+        .quiet(false)
+        .verbosity(log_level)
+        .timestamp(stderrlog::Timestamp::Off)
+        .init()
+        .unwrap();
+    
+        trace!("{:#?}", command_line_params);
+    
 
     let config_file_name = command_line_params.value_of("config file").unwrap();
     println!("Processing configuration file: {}", config_file_name);
     
     let config_file = read_to_string(config_file_name).unwrap();
     env::set_current_dir(std::path::Path::new(config_file_name).parent().unwrap()).unwrap();
-    let config = process_config_file(&config_file, debug_level).unwrap();
-    if debug_level > 0 {
-        println!("Parsed configuration:\n{:#?}", config);
-    }
-    if !verify_response_files_exist(&config, debug_level) {
-        eprintln!("Invalid config file, not all reponse files exist");
+    let config = process_config_file(&config_file).unwrap();
+        info!("Parsed configuration:\n{:#?}", config);
+    if !verify_response_files_exist(&config) {
+        error!("Invalid config file, not all reponse files exist");
         exit(1);
     }
     if !verify_all_profiles_are_referenced(&config) {
-        eprintln!("Invalid config file, not all defined profiles are reachable");
+        error!("Invalid config file, not all defined profiles are reachable");
         exit(1);
     }
-    println!("verify shadow");
-    if !verify_mocks_dont_shadow_each_other(&config, debug_level) {
-        eprintln!("Invalid config file, some mocks are shadowed by previously defined ones and are not reachable");
+    if !verify_mocks_dont_shadow_each_other(&config) {
+        error!("Invalid config file, some mocks are shadowed by previously defined ones and are not reachable");
         exit(1);
     }
 
@@ -119,17 +124,15 @@ fn main() {
     let kmp_tables = KmpTables::new();
 
     let address = command_line_params.value_of("address:port").unwrap();
-    if debug_level > 0 {
-        println!("Starting server: {} with debug level {}", address, debug_level);
-    } else {
-        println!("Starting server: {}", address);
-    }
+
+    println!("Starting server: {}", address);
+
     let listener = TcpListener::bind(address).unwrap();
 
     for stream in listener.incoming() {
         let stream = stream.unwrap();
         counter += 1;
-        handle_connection(stream, &config, &default_mock, &mut time, &mut profile,counter, &kmp_tables, debug_level);
+        handle_connection(stream, &config, &default_mock, &mut time, &mut profile,counter, &kmp_tables);
     }
 }
 
@@ -154,7 +157,7 @@ fn get_profile(group: regex::Captures, found_profiles: &mut HashMap<String, isiz
     }
 }
 
-fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>, &'static str> {
+fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
     let mut config = Vec::with_capacity(100);
     let mut profile_counter = DEFAULT_PROFILE;
     let mut found_profiles: HashMap<String, isize> = HashMap::default();
@@ -294,10 +297,8 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
     Ok(config)
 }
 
-fn verify_response_files_exist(config: &Vec<Mock>, debug_level: u64) -> bool {
-    if debug_level > 0 {
-        println!("Verifying all referenced files exist")
-    }
+fn verify_response_files_exist(config: &Vec<Mock>) -> bool {
+    info!("Verifying all referenced files exist");
     let mut result = true;
     let mut verified_files: HashSet<&str> = HashSet::default();
     for mock in config {
@@ -332,7 +333,7 @@ mod tests {
             headers
             "##;
 
-        let config = super::process_config_file(config_file, 0).unwrap();
+        let config = super::process_config_file(config_file).unwrap();
         assert_eq!(2, config.len());
         assert_eq!(super::DEFAULT_PROFILE, config[0].profile);
     }
@@ -347,7 +348,7 @@ mod tests {
         `delay 2000;headers;body
         "##;
 
-        let config = super::process_config_file(config_file, 0).unwrap();
+        let config = super::process_config_file(config_file).unwrap();
         assert_eq!(2, config.len());
         assert_eq!(Some(super::Duration::from_millis(1000)), config.first().unwrap().time);
         assert_eq!(Some(super::Duration::from_millis(2000)), config.last().unwrap().delay);
@@ -360,7 +361,7 @@ mod tests {
         `delay; headers
         "##;
 
-        let config = super::process_config_file(config_file, 0);
+        let config = super::process_config_file(config_file);
         assert!(config.is_err());
     }
 
@@ -371,7 +372,7 @@ mod tests {
         `1000; headers
         "##;
 
-        let config = super::process_config_file(config_file, 0);
+        let config = super::process_config_file(config_file);
         assert!(config.is_err());
     }
 
@@ -386,7 +387,7 @@ mod tests {
 
         "##;
 
-        let config = super::process_config_file(config_file, 0).unwrap();
+        let config = super::process_config_file(config_file).unwrap();
         assert_eq!(2, config.len());
         assert_eq!(Some(super::Duration::from_millis(1000)), config.first().unwrap().time);
         assert_eq!(1, config.first().unwrap().profile);
@@ -395,6 +396,8 @@ mod tests {
 }
 
 fn verify_all_profiles_are_referenced(config: &Vec<Mock>) -> bool {
+    info!("Verifying all profiles are referenced");
+
     let mut result = true;
     
     let referenced_profiles: HashSet<isize> = HashSet::from_iter(config.iter().filter(|m| m.command == Command::Profile).map(|m| m.destination_profile).into_iter());
@@ -418,7 +421,7 @@ fn verify_all_profiles_are_referenced(config: &Vec<Mock>) -> bool {
         `[profile1]; headers
         "##;
 
-        let config = super::process_config_file(config_file, 0).unwrap();
+        let config = super::process_config_file(config_file).unwrap();
         assert!(!super::verify_all_profiles_are_referenced(&config));
     }
 
@@ -435,7 +438,7 @@ fn verify_all_profiles_are_referenced(config: &Vec<Mock>) -> bool {
         `profile [profile1]; headers; ok.html
         "##;
 
-        let config = super::process_config_file(config_file, 0).unwrap();
+        let config = super::process_config_file(config_file).unwrap();
         assert!(super::verify_all_profiles_are_referenced(&config));
     }
 
@@ -455,7 +458,9 @@ fn shadowed(head: &Mock, tail: &Mock) -> bool {
     )
 }
 
-fn verify_mocks_dont_shadow_each_other(config: &Vec<Mock>, debug_level: u64) -> bool {
+fn verify_mocks_dont_shadow_each_other(config: &Vec<Mock>) -> bool {
+    info!("Verifying mocks don't shadow each other, i.e. all mocks are reachable");
+
     let mut result = true;
     let mut remaining: &[Mock]  = config;
 
@@ -469,11 +474,8 @@ fn verify_mocks_dont_shadow_each_other(config: &Vec<Mock>, debug_level: u64) -> 
         if let Some((head, tail)) = remaining.split_first() {
             tail.iter().filter(|t| shadowed(head, t)).for_each(|t| {
                 result = false;
-                if debug_level > 0 {
-                    println!("Criteria {:#?} shadows {:#?}, maybe they are in the wrong order?", head, t)
-                } else {
-                    println!("Criteria {:#?} shadows {:#?}, maybe they are in the wrong order?", head.patterns, t.patterns);
-                }
+                error!("Criteria {:#?} shadows {:#?}, maybe they are in the wrong order?", head.patterns, t.patterns);
+                debug!("Criteria {:#?} shadows {:#?}, maybe they are in the wrong order?", head, t)
             });
             remaining = tail;
         }
@@ -560,7 +562,7 @@ mod tests_shadowing {
             make_mock(vec!["switch"], 0, None),
             make_mock(vec!["switch_to_default"], 0, None),
         ];
-        assert!(!super::verify_mocks_dont_shadow_each_other(&config, 0));
+        assert!(!super::verify_mocks_dont_shadow_each_other(&config));
     }
 
     #[test]
@@ -570,12 +572,12 @@ mod tests_shadowing {
             make_mock(vec!["switch_to_default"], 0, None),
             make_mock(vec!["switch", "header:value2"], 0, None),
         ];
-        assert!(super::verify_mocks_dont_shadow_each_other(&config, 0));
+        assert!(super::verify_mocks_dont_shadow_each_other(&config));
     }
 
     #[test]
     fn config_empty_config_not_shadowing() {
-        assert!(super::verify_mocks_dont_shadow_each_other(&vec![], 0));
+        assert!(super::verify_mocks_dont_shadow_each_other(&vec![]));
     }
 }
 
@@ -626,7 +628,6 @@ fn handle_connection(
     profile: &mut isize,
     counter: usize,
     kmp_tables: &KmpTables,
-    debug_level: u64,
 ) {
     let mut buffer = [0; 20480];
     let start = Instant::now();
@@ -672,11 +673,8 @@ fn handle_connection(
         print!("\x1B[31;1m");
     }
     println!("=========================\nRequest {}:\n{}\n\n", counter, request);
-    if debug_level == 0 {
-        println!("Response: {}", mock.filenames);
-    } else {
-        println!("Response, current profile {}\n{:#?}", *profile, mock);
-    }
+    info!("Current profile {}\n, mock: {:#?}", *profile, mock);
+    println!("Response: {}", mock.filenames);
     // Reset the colors
     print!("\x1B[0m");
     match mock.command {
