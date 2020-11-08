@@ -1,0 +1,51 @@
+# This is a config file.
+#
+# Lines starting with # are considered comments and ignored.
+#
+# Each response is a group of lines. Last line in the group is a list 
+# of files separated by ; that will be send back to the requester
+# All other lines are criteria to be searched in the request, body and
+# headers. First group to fully match will be the reply.
+#
+# The default response is the 404.html file.
+#
+# In the file line, if the first entry starts with ` it means time.
+# `reset will set the internal timer to now
+# `1000 means only execute this after 1000 milliseconds have passed 
+# since the timer was reset.
+# Because first in the list is first served, put longer times first.
+
+
+# easier to recognize our tab
+GET /favicon.ico
+headers-ico;favicon.ico
+
+GET /hello
+headers;hello.html
+
+# reset internal timer
+/reset
+`reset;headers;reset.html
+
+# only match 5000 milliseconds after reset
+/time
+`after 5000;headers;time2.html
+
+# only match 1000 milliseconds after reset
+/time
+`[modified] after 1000;headers;time1.html
+
+/pro1
+headers;default_profile.html
+
+/pro1
+`[profile];headers;profile.html
+
+/switch_to_modified
+`profile [modified]; headers; switch.html
+
+/switch_to_default
+`profile [default]; headers; switch.html
+
+/switch
+`profile [profile]; headers; switch.html

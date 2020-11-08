@@ -14,6 +14,8 @@ use regex::Regex;
 use std::collections::{ HashMap, HashSet };
 use std::iter::FromIterator;
 
+use std::process::exit;
+
 #[macro_use]
 extern crate lazy_static;
 
@@ -34,6 +36,7 @@ struct Mock<'a> {
     time: Option<Duration>,
     delay: Option<Duration>,
     profile: isize,
+    destination_profile: isize,
     command: Command,
 }
 
@@ -85,11 +88,18 @@ fn main() {
     if debug_level > 0 {
         println!("Parsed configuration:\n{:#?}", config);
     }
-    if !verify_response_files_exist(&config) {
-        panic!("Invalid config file");
+    if !verify_response_files_exist(&config, debug_level) {
+        eprintln!("Invalid config file, not all reponse files exist");
+        exit(1);
     }
     if !verify_all_profiles_are_referenced(&config) {
-        panic!("Invalid config file");
+        eprintln!("Invalid config file, not all defined profiles are reachable");
+        exit(1);
+    }
+    println!("verify shadow");
+    if !verify_mocks_dont_shadow_each_other(&config, debug_level) {
+        eprintln!("Invalid config file, some mocks are shadowed by previously defined ones and are not reachable");
+        exit(1);
     }
 
     let default_mock = Mock {
@@ -98,6 +108,7 @@ fn main() {
         time: None,
         delay: None,
         profile: -1,
+        destination_profile: ANY_PROFILE,
         command: Command::Serve,
     };
     let mut time = Instant::now();
@@ -148,6 +159,7 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
     let mut profile_counter = DEFAULT_PROFILE;
     let mut found_profiles: HashMap<String, isize> = HashMap::default();
     found_profiles.insert(String::from("default"), DEFAULT_PROFILE);
+    found_profiles.insert(String::from("any"), ANY_PROFILE);
     'mocks: for (_key, group) in config_file
         .lines()
         .filter(|s| !s.trim_start().starts_with("#"))
@@ -158,7 +170,8 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
         let mut patterns: Vec<&str> = group.map(|s| s.trim()).collect();
 
         if let Some(filenames) = patterns.pop() {
-            {            
+            {
+                // after
                 lazy_static! {
                     static ref TIME: Regex = Regex::new(r"(?x)
                         ^`(\s*\[(?P<profile>.+)\]\s+)? # profile name
@@ -172,12 +185,14 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
                         time: Some(Duration::from_millis(group.name("time").unwrap().as_str().parse().unwrap())),
                         delay: None,
                         profile: get_profile(group, &mut found_profiles, &mut profile_counter),
+                        destination_profile: ANY_PROFILE,
                         command: Command::After,
                     });
-                    continue 'mocks;               
+                    continue 'mocks;
                 };
             }
             {
+                // delay
                 lazy_static! {
                     static ref DELAY: Regex = Regex::new(r"(?x)
                         ^`(\s*\[(?P<profile>.+)\]\s+)? # profile name
@@ -191,6 +206,7 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
                         time: None,
                         delay: Some(Duration::from_millis(group.name("delay").unwrap().as_str().parse().unwrap())),
                         profile: get_profile(group, &mut found_profiles, &mut profile_counter),
+                        destination_profile: ANY_PROFILE,
                         command: Command::Delay,
                     });
                         
@@ -198,6 +214,7 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
                 };
             }
             {
+                // profile
                 lazy_static! {
                     static ref SWITCH_PROFILE: Regex = Regex::new(r"^`\s*profile\s+\[(?P<profile>.+)\]\s*;.+").unwrap();
                 }
@@ -207,7 +224,8 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
                         patterns,
                         time: None,
                         delay: None,
-                        profile: get_profile(group, &mut found_profiles, &mut profile_counter),
+                        profile: ANY_PROFILE,
+                        destination_profile: get_profile(group, &mut found_profiles, &mut profile_counter),
                         command: Command::Profile,
                     });
 
@@ -215,6 +233,7 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
                 }
             }
             {
+                // only profile specified
                 lazy_static! {
                     static ref PROFILE: Regex = Regex::new(r"^`\s*\[(?P<profile>.+)\]\s*;.+").unwrap();
                 }
@@ -225,6 +244,7 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
                         time: None,
                         delay: None,
                         profile: get_profile(group, &mut found_profiles, &mut profile_counter),
+                        destination_profile: ANY_PROFILE,
                         command: Command::Serve,
                     });
 
@@ -232,6 +252,7 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
                 }
             }
             {
+                // reset
                 lazy_static! {
                     static ref RESET: Regex = Regex::new(r"^`\s*reset\s*;.+").unwrap();
                 }
@@ -242,6 +263,7 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
                         time: None,
                         delay: None,
                         profile: DEFAULT_PROFILE,
+                        destination_profile: ANY_PROFILE,
                         command: Command::Reset,
                     });
 
@@ -264,6 +286,7 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
                 time: None,
                 delay: None,
                 profile: DEFAULT_PROFILE,
+                destination_profile: ANY_PROFILE,
                 command: Command::Serve,
             });
         }
@@ -271,7 +294,10 @@ fn process_config_file(config_file: &str, _debug_level: u64) -> Result<Vec<Mock>
     Ok(config)
 }
 
-fn verify_response_files_exist(config: &Vec<Mock>) -> bool {
+fn verify_response_files_exist(config: &Vec<Mock>, debug_level: u64) -> bool {
+    if debug_level > 0 {
+        println!("Verifying all referenced files exist")
+    }
     let mut result = true;
     let mut verified_files: HashSet<&str> = HashSet::default();
     for mock in config {
@@ -290,20 +316,6 @@ fn verify_response_files_exist(config: &Vec<Mock>) -> bool {
             }
         }
     }
-    result
-}
-
-fn verify_all_profiles_are_referenced(config: &Vec<Mock>) -> bool {
-    let mut result = true;
-    
-    let referenced_profiles: HashSet<isize> = HashSet::from_iter(config.iter().filter(|m| m.command == Command::Profile).map(|m| m.profile).into_iter());
-    config.iter()
-        .filter(|m| m.profile != DEFAULT_PROFILE && m.profile != ANY_PROFILE)
-        .filter(|m| !referenced_profiles.contains(&m.profile))
-        .for_each(|m| {
-            result = false;
-            eprintln!("{} profile not referenced", m.filenames);
-        });
     result
 }
 
@@ -380,7 +392,25 @@ mod tests {
         assert_eq!(1, config.first().unwrap().profile);
         assert_eq!(2, config.last().unwrap().profile);
     }
+}
 
+fn verify_all_profiles_are_referenced(config: &Vec<Mock>) -> bool {
+    let mut result = true;
+    
+    let referenced_profiles: HashSet<isize> = HashSet::from_iter(config.iter().filter(|m| m.command == Command::Profile).map(|m| m.destination_profile).into_iter());
+    config.iter()
+        .filter(|m| m.profile != DEFAULT_PROFILE && m.profile != ANY_PROFILE)
+        .filter(|m| !referenced_profiles.contains(&m.profile))
+        .for_each(|m| {
+            result = false;
+            eprintln!("{} - non default profile not referenced by any profile switch statement", m.filenames);
+        });
+    result
+}
+
+#[cfg(test)]
+    mod tests_profiles_referenced {
+    
     #[test]
     fn process_bad_config_file_with_unreferenced_profile() {
         let config_file = r##"
@@ -409,6 +439,144 @@ mod tests {
         assert!(super::verify_all_profiles_are_referenced(&config));
     }
 
+}
+
+fn shadowed(head: &Mock, tail: &Mock) -> bool {
+    if head.profile != ANY_PROFILE && head.profile != tail.profile {
+        return false;
+    }
+    if head.time != tail.time {
+        return false;
+    }
+    
+    None == head.patterns.iter().find(|hp| 
+        // a tail pattern that doesn't contain any pattern from the head -> tail mock is not shadowed
+        None == tail.patterns.iter().find(|pt| pt.contains(**hp))
+    )
+}
+
+fn verify_mocks_dont_shadow_each_other(config: &Vec<Mock>, debug_level: u64) -> bool {
+    let mut result = true;
+    let mut remaining: &[Mock]  = config;
+
+    let mut safety_count = 0;
+    while remaining.len() > 1 {
+        safety_count += 1;
+        if safety_count > 100000 {
+            println!("Remaining to check for shadow {:#?}", remaining);
+            panic!("Too many iterations in verify_mocks_dont_shadow_each_other");
+        }
+        if let Some((head, tail)) = remaining.split_first() {
+            tail.iter().filter(|t| shadowed(head, t)).for_each(|t| {
+                result = false;
+                if debug_level > 0 {
+                    println!("Criteria {:#?} shadows {:#?}, maybe they are in the wrong order?", head, t)
+                } else {
+                    println!("Criteria {:#?} shadows {:#?}, maybe they are in the wrong order?", head.patterns, t.patterns);
+                }
+            });
+            remaining = tail;
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests_shadowing {
+    use std::time::{Duration};
+    fn make_mock(patterns: Vec<&str>, profile: isize, time: Option<Duration>) -> super::Mock {
+        super::Mock {
+            filenames: "",
+            patterns,
+            time,
+            delay: None,
+            profile,
+            destination_profile: -1,
+            command: super::Command::Serve,
+        }
+    }
+
+    #[test]
+    fn shadowed_test() {
+        let head = make_mock(vec!["switch"], 0, None);
+        let tail = make_mock(vec!["switch_to_default"], 0, None);
+        assert!(super::shadowed(&head, &tail));
+    }
+
+    #[test]
+    fn not_shadowed_test() {
+        let head = make_mock(vec!["switch_to_default"], 0, None);
+        let tail = make_mock(vec!["switch"], 0, None);
+        assert!(!super::shadowed(&head, &tail));
+    }    
+    #[test]
+    fn multiple_not_shadowed_test() {
+        let head = make_mock(vec!["switch", "header:value"], 0, None);
+        let tail = make_mock(vec!["switch_to_default"], 0, None);
+        assert!(!super::shadowed(&head, &tail));
+    }
+
+    #[test]
+    fn multiple_not_shadowed_test_more_lines() {
+        let head = make_mock(vec!["switch", "header:value"], 0, None);
+        let tail = make_mock(vec!["switch_to_default"], 0, None);
+        assert!(!super::shadowed(&head, &tail));
+    }
+
+    #[test]
+    fn not_shadowd_if_different_profile() {
+        let head = make_mock(vec!["switch"], 0, None);
+        let tail = make_mock(vec!["switch"], 1, None);
+        assert!(!super::shadowed(&head, &tail));
+
+        let head = make_mock(vec!["switch"], -1, None);
+        let tail = make_mock(vec!["switch"], 1, None);
+        assert!(super::shadowed(&head, &tail));        
+    }
+    #[test]
+    fn not_shadowd_if_different_time() {
+        let head = make_mock(vec!["switch"], 0, Some(Duration::from_millis(1000)));
+        let tail = make_mock(vec!["switch"], 0, Some(Duration::from_millis(0)));
+        assert!(!super::shadowed(&head, &tail));
+    }
+
+    #[test]
+    fn not_shadowed_if_only_one_has_time() {
+        let head = make_mock(vec!["switch"], 0, Some(Duration::from_millis(1000)));
+        let tail = make_mock(vec!["switch"], 0, None);
+        assert!(!super::shadowed(&head, &tail));
+    }
+
+    #[test]
+    fn shadowed_if_same_time() {
+        let head = make_mock(vec!["switch"], 0, Some(Duration::from_millis(1000)));
+        let tail = make_mock(vec!["switch"], 0, Some(Duration::from_millis(1000)));
+        assert!(super::shadowed(&head, &tail));
+    }
+
+    #[test]
+    fn config_not_shadowing() {
+        let config = vec![
+            make_mock(vec!["switch"], 0, None),
+            make_mock(vec!["switch_to_default"], 0, None),
+        ];
+        assert!(!super::verify_mocks_dont_shadow_each_other(&config, 0));
+    }
+
+    #[test]
+    fn config_empty_config_not_shadowing_more_lines() {
+        let config = vec![
+            make_mock(vec!["switch", "header:value1"], 0, None),
+            make_mock(vec!["switch_to_default"], 0, None),
+            make_mock(vec!["switch", "header:value2"], 0, None),
+        ];
+        assert!(super::verify_mocks_dont_shadow_each_other(&config, 0));
+    }
+
+    #[test]
+    fn config_empty_config_not_shadowing() {
+        assert!(super::verify_mocks_dont_shadow_each_other(&vec![], 0));
+    }
 }
 
 // check for two consecutive EOL (\n)
@@ -515,8 +683,8 @@ fn handle_connection(
         Command::Reset => *time_origin = Instant::now(),
         Command::Delay => thread::sleep(mock.delay.unwrap()),
         Command::Profile => {
-            println!("Switched to profile {} from {}", mock.profile, *profile);
-            *profile = mock.profile;
+            println!("Switched to profile {} from {}", mock.destination_profile, *profile);
+            *profile = mock.destination_profile;
         },
         _ => ()
     }
