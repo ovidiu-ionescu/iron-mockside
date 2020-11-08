@@ -39,6 +39,7 @@ struct Mock<'a> {
     profile: isize,
     destination_profile: isize,
     command: Command,
+    line_number: usize
 }
 
 // to accelerate the search of headers
@@ -115,6 +116,7 @@ fn main() {
         profile: -1,
         destination_profile: ANY_PROFILE,
         command: Command::Serve,
+        line_number: 0,
     };
     let mut time = Instant::now();
     let mut profile = DEFAULT_PROFILE;
@@ -165,12 +167,24 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
     found_profiles.insert(String::from("any"), ANY_PROFILE);
     'mocks: for (_key, group) in config_file
         .lines()
-        .filter(|s| !s.trim_start().starts_with("#"))
-        .group_by(|s| s.trim().is_empty())
+        .enumerate()
+        // eliminate comments
+        .filter(|(_line_number, s)| !s.trim_start().starts_with("#")) 
+        // use line is empty as criteria for grouping
+        .group_by(|(_line_number, s)| s.trim().is_empty()) 
+        // iterate over the groups
         .into_iter()
+        // remove the groups of empty lines
         .filter(|(key, _group)| !key)
     {
-        let mut patterns: Vec<&str> = group.map(|s| s.trim()).collect();
+        let mut group_line_number = 0;
+        let mut patterns: Vec<&str> = group.enumerate().map(|(n, (line_number, s))| {
+            if n == 0 {
+                // get the number of the first line in the group
+                group_line_number = line_number;
+            }
+            s.trim()
+        }).collect();
 
         if let Some(filenames) = patterns.pop() {
             {
@@ -190,6 +204,8 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         profile: get_profile(group, &mut found_profiles, &mut profile_counter),
                         destination_profile: ANY_PROFILE,
                         command: Command::After,
+                        line_number: group_line_number,
+
                     });
                     continue 'mocks;
                 };
@@ -211,6 +227,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         profile: get_profile(group, &mut found_profiles, &mut profile_counter),
                         destination_profile: ANY_PROFILE,
                         command: Command::Delay,
+                        line_number: group_line_number,
                     });
                         
                     continue 'mocks;               
@@ -230,6 +247,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         profile: ANY_PROFILE,
                         destination_profile: get_profile(group, &mut found_profiles, &mut profile_counter),
                         command: Command::Profile,
+                        line_number: group_line_number,
                     });
 
                     continue 'mocks;
@@ -249,6 +267,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         profile: get_profile(group, &mut found_profiles, &mut profile_counter),
                         destination_profile: ANY_PROFILE,
                         command: Command::Serve,
+                        line_number: group_line_number,
                     });
 
                     continue 'mocks;
@@ -268,6 +287,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         profile: DEFAULT_PROFILE,
                         destination_profile: ANY_PROFILE,
                         command: Command::Reset,
+                        line_number: group_line_number,
                     });
 
                     continue 'mocks;
@@ -291,6 +311,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                 profile: DEFAULT_PROFILE,
                 destination_profile: ANY_PROFILE,
                 command: Command::Serve,
+                line_number: group_line_number,
             });
         }
     }
@@ -310,9 +331,9 @@ fn verify_response_files_exist(config: &Vec<Mock>) -> bool {
         for file in filename_iterator {
             if verified_files.insert(file) {
                 if !Path::new(file).exists() {
+                    error!("Could not find file: {}, from mock starting at line {}", file, mock.line_number);
+                    info!("{:#?}", mock);
                     result = false;
-                    eprintln!("Could not find file: {}", file);
-                    println!("{:#?}", mock);
                 }
             }
         }
@@ -405,8 +426,8 @@ fn verify_all_profiles_are_referenced(config: &Vec<Mock>) -> bool {
         .filter(|m| m.profile != DEFAULT_PROFILE && m.profile != ANY_PROFILE)
         .filter(|m| !referenced_profiles.contains(&m.profile))
         .for_each(|m| {
+            error!("{} - non default profile not referenced by any profile switch statement, group starting at line {}", m.filenames, m.line_number);
             result = false;
-            eprintln!("{} - non default profile not referenced by any profile switch statement", m.filenames);
         });
     result
 }
@@ -474,7 +495,7 @@ fn verify_mocks_dont_shadow_each_other(config: &Vec<Mock>) -> bool {
         if let Some((head, tail)) = remaining.split_first() {
             tail.iter().filter(|t| shadowed(head, t)).for_each(|t| {
                 result = false;
-                error!("Criteria {:#?} shadows {:#?}, maybe they are in the wrong order?", head.patterns, t.patterns);
+                error!("Criteria at line {}: {:#?} shadows line {} {:#?}, maybe they are in the wrong order?", head.line_number, head.patterns, t.line_number, t.patterns);
                 debug!("Criteria {:#?} shadows {:#?}, maybe they are in the wrong order?", head, t)
             });
             remaining = tail;
@@ -495,6 +516,7 @@ mod tests_shadowing {
             profile,
             destination_profile: -1,
             command: super::Command::Serve,
+            line_number: 0,
         }
     }
 
