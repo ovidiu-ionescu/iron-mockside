@@ -141,8 +141,8 @@ fn main() {
 /**
  * Extract the named group profile from the regex match
  */
-fn get_profile(group: regex::Captures, found_profiles: &mut HashMap<String, isize>, profile_counter: &mut isize) -> isize {
-    match group.name("profile") {
+fn get_named_match(group: &regex::Captures, found_profiles: &mut HashMap<String, isize>, profile_counter: &mut isize, group_name: &str, default: isize) -> isize {
+    match group.name(group_name) {
         Some(m) => {
             let profile = m.as_str();
 
@@ -155,7 +155,7 @@ fn get_profile(group: regex::Captures, found_profiles: &mut HashMap<String, isiz
                 }
             }
         },
-        None => DEFAULT_PROFILE
+        None => default
     }
 }
 
@@ -187,11 +187,12 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
         }).collect();
 
         if let Some(filenames) = patterns.pop() {
+            let mut get_profile = |group| get_named_match(group, &mut found_profiles, &mut profile_counter, &"profile", DEFAULT_PROFILE);
             {
                 // after
                 lazy_static! {
                     static ref TIME: Regex = Regex::new(r"(?x)
-                        ^`(\s*\[(?P<profile>.+)\]\s+)? # profile name
+                        ^`\s*(\[(?P<profile>.+)\]\s+)? # profile name
                         after\s*(?P<time>\d+)\s*;      # after duration
                         ").unwrap();
                 }
@@ -201,7 +202,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         patterns,
                         time: Some(Duration::from_millis(group.name("time").unwrap().as_str().parse().unwrap())),
                         delay: None,
-                        profile: get_profile(group, &mut found_profiles, &mut profile_counter),
+                        profile: get_profile(&group),
                         destination_profile: ANY_PROFILE,
                         command: Command::After,
                         line_number: group_line_number,
@@ -214,7 +215,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                 // delay
                 lazy_static! {
                     static ref DELAY: Regex = Regex::new(r"(?x)
-                        ^`(\s*\[(?P<profile>.+)\]\s+)? # profile name
+                        ^`\s*(\[(?P<profile>.+)\]\s+)? # profile name
                         delay\s*(?P<delay>\d+)\s*;     # delay duration
                         ").unwrap();
                 }
@@ -224,7 +225,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         patterns,
                         time: None,
                         delay: Some(Duration::from_millis(group.name("delay").unwrap().as_str().parse().unwrap())),
-                        profile: get_profile(group, &mut found_profiles, &mut profile_counter),
+                        profile: get_profile(&group),
                         destination_profile: ANY_PROFILE,
                         command: Command::Delay,
                         line_number: group_line_number,
@@ -236,7 +237,10 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
             {
                 // profile
                 lazy_static! {
-                    static ref SWITCH_PROFILE: Regex = Regex::new(r"^`\s*profile\s+\[(?P<profile>.+)\]\s*;.+").unwrap();
+                    static ref SWITCH_PROFILE: Regex = Regex::new(r"(?x)
+                        ^`\s*(\[(?P<profile_src>.+)\]\s+)? # profile name
+                        profile\s+\[(?P<profile_dest>.+)\]\s*;.+ # profile to swith to
+                        ").unwrap();
                 }
                 if let Some(group) = SWITCH_PROFILE.captures_iter(filenames).next() {
                     config.push(Mock {
@@ -244,8 +248,8 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         patterns,
                         time: None,
                         delay: None,
-                        profile: ANY_PROFILE,
-                        destination_profile: get_profile(group, &mut found_profiles, &mut profile_counter),
+                        profile: get_named_match(&group, &mut found_profiles, &mut profile_counter, &"profile_src", ANY_PROFILE),
+                        destination_profile: get_named_match(&group, &mut found_profiles, &mut profile_counter, &"profile_dest", DEFAULT_PROFILE),
                         command: Command::Profile,
                         line_number: group_line_number,
                     });
@@ -264,7 +268,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         patterns,
                         time: None,
                         delay: None,
-                        profile: get_profile(group, &mut found_profiles, &mut profile_counter),
+                        profile: get_profile(&group),
                         destination_profile: ANY_PROFILE,
                         command: Command::Serve,
                         line_number: group_line_number,
@@ -276,6 +280,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
             {
                 // reset
                 lazy_static! {
+                    // TODO: Add profile
                     static ref RESET: Regex = Regex::new(r"^`\s*reset\s*;.+").unwrap();
                 }
                 if let Some(_) = RESET.captures_iter(filenames).next() {
@@ -457,6 +462,23 @@ fn verify_all_profiles_are_referenced(config: &Vec<Mock>) -> bool {
 
         /switch
         `profile [profile1]; headers; ok.html
+        "##;
+
+        let config = super::process_config_file(config_file).unwrap();
+        assert!(super::verify_all_profiles_are_referenced(&config));
+    }
+
+    #[test]
+    fn process_config_file_with_profiled_switch_profile() {
+        let config_file = r##"
+        GET /default
+        headers;default.html
+        
+        POST /path
+        `[profile1]; headers
+
+        /switch
+        `[default] profile [profile1]; headers; ok.html
         "##;
 
         let config = super::process_config_file(config_file).unwrap();
@@ -728,7 +750,7 @@ fn find_mock<'a, 'b>(
     profile: isize,
 ) -> Option<&'b Mock<'b>> {
     'outside: for mock in config {
-        if mock.profile != ANY_PROFILE && profile != mock.profile && mock.command != Command::Profile {
+        if mock.profile != ANY_PROFILE && profile != mock.profile {
                 continue 'outside;
         }
         for pattern in &mock.patterns {

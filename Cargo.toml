@@ -1,6 +1,6 @@
 [package]
 name = "iron-mockside"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Ovidiu Ionescu <ovidiu@ionescu.net>"]
 edition = "2018"
 
