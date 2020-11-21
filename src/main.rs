@@ -65,6 +65,27 @@ impl KmpTables {
     }
 }
 
+const RESPONSE404: &str = r##"HTTP/1.0 404 Not Found
+server: iron-mockside
+content-type: text/html
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        width: 35em;
+        margin: 0 auto;
+        font-family: "Lucida Console", Monaco, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>R Tape loading error, 404</h1>
+  </body>
+</html>
+"##;
+
 fn main() {
     let command_line_params = clap_app!(
         ("iron-mockside") => 
@@ -91,7 +112,13 @@ fn main() {
     let config_file_name = command_line_params.value_of("config file").unwrap();
     println!("Processing configuration file: {}", config_file_name);
     
-    let config_file = read_to_string(config_file_name).unwrap();
+    let config_file = match read_to_string(config_file_name) {
+        Ok(content) => content,
+        Err(e) => {
+            error!("Failed to read from {}, {}", config_file_name, e);
+            exit(1);
+        }
+    };
     env::set_current_dir(std::path::Path::new(config_file_name).parent().unwrap()).unwrap();
     let config = process_config_file(&config_file).unwrap();
         info!("Parsed configuration:\n{:#?}", config);
@@ -248,8 +275,8 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
                         patterns,
                         time: None,
                         delay: None,
-                        profile: get_named_match(&group, &mut found_profiles, &mut profile_counter, &"profile_src", ANY_PROFILE),
-                        destination_profile: get_named_match(&group, &mut found_profiles, &mut profile_counter, &"profile_dest", DEFAULT_PROFILE),
+                        profile: get_named_match(&group, &mut found_profiles, &mut profile_counter, &"profile_src", DEFAULT_PROFILE),
+                        destination_profile: get_named_match(&group, &mut found_profiles, &mut profile_counter, &"profile_dest", ANY_PROFILE),
                         command: Command::Profile,
                         line_number: group_line_number,
                     });
@@ -280,16 +307,18 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
             {
                 // reset
                 lazy_static! {
-                    // TODO: Add profile
-                    static ref RESET: Regex = Regex::new(r"^`\s*reset\s*;.+").unwrap();
+                    static ref RESET: Regex = Regex::new(r"(?x)
+                        ^`\s*(\[(?P<profile>.+)\]\s+)? # profile name
+                        reset\s*;.+
+                        ").unwrap();
                 }
-                if let Some(_) = RESET.captures_iter(filenames).next() {
+                if let Some(group) = RESET.captures_iter(filenames).next() {
                     config.push(Mock {
                         filenames,
                         patterns,
                         time: None,
                         delay: None,
-                        profile: DEFAULT_PROFILE,
+                        profile: get_profile(&group),
                         destination_profile: ANY_PROFILE,
                         command: Command::Reset,
                         line_number: group_line_number,
@@ -485,6 +514,21 @@ fn verify_all_profiles_are_referenced(config: &Vec<Mock>) -> bool {
         assert!(super::verify_all_profiles_are_referenced(&config));
     }
 
+    #[test]
+    fn process_config_with_reset() {
+        let config_file = r##"
+
+        POST /path
+        `[default] profile [profile]; headers
+
+        /switch/reset
+        `[profile] reset; headers
+        "##;
+
+        let config = super::process_config_file(config_file).unwrap();
+        assert_eq!(1, config[1].profile);
+        assert!(super::verify_all_profiles_are_referenced(&config));
+    }
 }
 
 fn shadowed(head: &Mock, tail: &Mock) -> bool {
@@ -736,8 +780,21 @@ fn handle_connection(
         filename_iterator.next();
     }
     for file in filename_iterator {
-        let mut from_file = File::open(file).unwrap();
-        io::copy(&mut from_file, &mut stream).expect("Failed to copy to socket");
+        match File::open(file) {
+            Ok(mut from_file) => {
+                io::copy(&mut from_file, &mut stream).expect("Failed to copy to socket");
+            },
+            Err(e) => {
+                if mock.patterns.len() == 0 {
+                    debug!("No file specified for 404, responding with default");
+                    stream.write(RESPONSE404.as_bytes()).unwrap();
+                } else {
+                    error!("Could not open file {} to service request, error {}", file, e);
+                    exit(1);
+                }
+                
+            }
+        }
     }
     stream.flush().unwrap();
 }
