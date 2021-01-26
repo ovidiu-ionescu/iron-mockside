@@ -146,8 +146,6 @@ fn main() {
     let mut time = Instant::now();
     let mut profile = DEFAULT_PROFILE;
 
-    let mut counter: usize = 0;
-
     let kmp_tables = KmpTables::new();
 
     let address = command_line_params.value_of("address:port").unwrap();
@@ -156,10 +154,9 @@ fn main() {
 
     let listener = TcpListener::bind(address).unwrap();
 
-    for stream in listener.incoming() {
+    for (counter, stream) in listener.incoming().enumerate() {
         let stream = stream.unwrap();
-        counter += 1;
-        handle_connection(stream, &config, &default_mock, &mut time, &mut profile,counter, &kmp_tables);
+        handle_connection(stream, &config, &default_mock, &mut time, &mut profile, counter + 1, &kmp_tables);
     }
 }
 
