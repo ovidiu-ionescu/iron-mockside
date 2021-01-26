@@ -1,5 +1,4 @@
 use itertools::Itertools;
-use std;
 use std::env;
 use std::fs::{read_to_string, File};
 use std::io;
@@ -12,7 +11,6 @@ use std::path::Path;
 
 use regex::Regex;
 use std::collections::{ HashMap, HashSet };
-use std::iter::FromIterator;
 
 use std::process::exit;
 
@@ -176,7 +174,7 @@ fn get_named_match(group: &regex::Captures, found_profiles: &mut HashMap<String,
             match found_profiles.get(profile) {
                 Some(id) => *id,
                 None =>  {
-                    *profile_counter = *profile_counter + 1;
+                    *profile_counter += 1;
                     found_profiles.insert(String::from(profile), *profile_counter);
                     *profile_counter
                 }
@@ -196,7 +194,7 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
         .lines()
         .enumerate()
         // eliminate comments
-        .filter(|(_line_number, s)| !s.trim_start().starts_with("#")) 
+        .filter(|(_line_number, s)| !s.trim_start().starts_with('#'))
         // use line is empty as criteria for grouping
         .group_by(|(_line_number, s)| s.trim().is_empty()) 
         // iterate over the groups
@@ -352,23 +350,21 @@ fn process_config_file(config_file: &str) -> Result<Vec<Mock>, &'static str> {
     Ok(config)
 }
 
-fn verify_response_files_exist(config: &Vec<Mock>) -> bool {
+fn verify_response_files_exist(config: &[Mock]) -> bool {
     info!("Verifying all referenced files exist");
     let mut result = true;
     let mut verified_files: HashSet<&str> = HashSet::default();
     for mock in config {
-        let mut filename_iterator = mock.filenames.split(";").map(|s| s.trim()).filter(|s| s.len() > 0);
+        let mut filename_iterator = mock.filenames.split(';').map(|s| s.trim()).filter(|s| !s.is_empty());
 
         if mock.filenames.starts_with('`') {
             filename_iterator.next();
         }
         for file in filename_iterator {
-            if verified_files.insert(file) {
-                if !Path::new(file).exists() {
-                    error!("Could not find file: {}, from mock starting at line {}", file, mock.line_number);
-                    info!("{:#?}", mock);
-                    result = false;
-                }
+            if verified_files.insert(file) && !Path::new(file).exists() {
+                error!("Could not find file: {}, from mock starting at line {}", file, mock.line_number);
+                info!("{:#?}", mock);
+                result = false;
             }
         }
     }
@@ -450,12 +446,12 @@ mod tests {
     }
 }
 
-fn verify_all_profiles_are_referenced(config: &Vec<Mock>) -> bool {
+fn verify_all_profiles_are_referenced(config: &[Mock]) -> bool {
     info!("Verifying all profiles are referenced");
 
     let mut result = true;
     
-    let referenced_profiles: HashSet<isize> = HashSet::from_iter(config.iter().filter(|m| m.command == Command::Profile).map(|m| m.destination_profile).into_iter());
+    let referenced_profiles: HashSet<isize> = config.iter().filter(|m| m.command == Command::Profile).map(|m| m.destination_profile).collect();
     config.iter()
         .filter(|m| m.profile != DEFAULT_PROFILE && m.profile != ANY_PROFILE)
         .filter(|m| !referenced_profiles.contains(&m.profile))
@@ -545,7 +541,7 @@ fn shadowed(head: &Mock, tail: &Mock) -> bool {
     )
 }
 
-fn verify_mocks_dont_shadow_each_other(config: &Vec<Mock>) -> bool {
+fn verify_mocks_dont_shadow_each_other(config: &[Mock]) -> bool {
     info!("Verifying mocks don't shadow each other, i.e. all mocks are reachable");
 
     let mut result = true;
@@ -673,9 +669,9 @@ mod tests_shadowing {
 fn find_empty_line(buffer: &[u8]) -> bool {
     let mut count = 0;
     let mut found = false;
-    match buffer.iter()
+    buffer.iter()
         .filter(|&&b| b != b'\r')
-        .find(|&&b| {
+        .any(|&b| {
             match b {
                 b'\n' => { 
                     count += 1;
@@ -688,11 +684,9 @@ fn find_empty_line(buffer: &[u8]) -> bool {
                 } else { count = 0 },
             }
             found
-        }) {
-        Some(_found) => true,
-        _ => false,
-    }
+        })
 }
+
 #[cfg(test)]
 mod empty_line_tests {
     #[test]
@@ -710,7 +704,7 @@ mod empty_line_tests {
 
 fn handle_connection(
     mut stream: TcpStream,
-    config: &Vec<Mock>,
+    config: &[Mock],
     default_mock: &Mock,
     time_origin: &mut Instant,
     profile: &mut isize,
@@ -730,12 +724,12 @@ fn handle_connection(
             } else {
                 if kmp_find_with_lsp_table(kmp_tables.expect_100_continue, &buffer[..count], &kmp_tables.expect_100_continue_lsp).is_some() {
                     println!("Send a continue response {}ms", start.elapsed().as_millis());
-                    stream.write(b"HTTP/1.1 100 Continue\r\n\r\n").unwrap();
+                    stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").unwrap();
                 }
                 // read the rest of the body
                 println!("Wait for the rest of the body");
-                stream.read(&mut buffer[count ..]).unwrap();
-                println!("Got the rest of the body {}ms", start.elapsed().as_millis());
+                let n = stream.read(&mut buffer[count ..]).unwrap();
+                println!("Got the rest of the body {}ms, {} bytes", start.elapsed().as_millis(), n);
             }
         }
     }
@@ -775,7 +769,7 @@ fn handle_connection(
         _ => ()
     }
 
-    let mut filename_iterator = mock.filenames.split(";").map(|s| s.trim()).filter(|s| s.len() > 0);
+    let mut filename_iterator = mock.filenames.split(';').map(|s| s.trim()).filter(|s| !s.is_empty());
     if mock.filenames.starts_with('`') {
         filename_iterator.next();
     }
@@ -785,9 +779,9 @@ fn handle_connection(
                 io::copy(&mut from_file, &mut stream).expect("Failed to copy to socket");
             },
             Err(e) => {
-                if mock.patterns.len() == 0 {
+                if mock.patterns.is_empty() {
                     debug!("No file specified for 404, responding with default");
-                    stream.write(RESPONSE404.as_bytes()).unwrap();
+                    stream.write_all(RESPONSE404.as_bytes()).unwrap();
                 } else {
                     error!("Could not open file {} to service request, error {}", file, e);
                     exit(1);
@@ -802,7 +796,7 @@ fn handle_connection(
 /// Finds a mock in the configuration corresponding to this request
 fn find_mock<'a, 'b>(
     request: &'a str,
-    config: &'b Vec<Mock>,
+    config: &'b [Mock],
     time_origin: &Instant,
     profile: isize,
 ) -> Option<&'b Mock<'b>> {
